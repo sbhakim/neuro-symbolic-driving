@@ -116,14 +116,24 @@ def plot_four_panel_figure(results: Dict[str, Trajectory],
         'nesy': {'color': '#4DB8AC', 'linestyle': '-', 'label': 'NeSy', 'linewidth': 2}
     }
 
-    # use one trajectory for shared metrics (distance, TTC, robustness)
-    # since they should be similar if we're comparing authority strategies
-    ref_traj = results['nesy']
+    # pick a reference time grid (assumed shared); fall back to first entry if needed
+    ref_name = 'nesy' if 'nesy' in results else next(iter(results))
+    ref_traj = results[ref_name]
+    ref_t = ref_traj.t
+
+    # build a conservative emergency shading signal: True if ANY baseline reports emergency at time k
+    combined_emergency = list(ref_traj.emergency)
+    try:
+        L = len(ref_t)
+        if all(len(traj.t) == L for traj in results.values()):
+            combined_emergency = [any(traj.emergency[k] for traj in results.values()) for k in range(L)]
+    except Exception:
+        combined_emergency = list(ref_traj.emergency)
 
     # Panel (a): Authority alpha(t) + monotonicity violations
     ax_alpha = axes[0]
     for name, traj in results.items():
-        style = styles[name]
+        style = styles.get(name, {'color': 'k', 'linestyle': '-', 'label': name})
         ax_alpha.plot(traj.t, traj.alpha, **style)
 
         # mark monotonicity violations
@@ -133,7 +143,7 @@ def plot_four_panel_figure(results: Dict[str, Trajectory],
             alpha_viol = [traj.alpha[k] for k in violations]
             ax_alpha.plot(t_viol, alpha_viol, 'rx', markersize=8, markeredgewidth=2)
 
-    shade_emergency_regions(ax_alpha, ref_traj.t, ref_traj.emergency)
+    shade_emergency_regions(ax_alpha, ref_t, combined_emergency)
     ax_alpha.set_ylabel('Authority α')
     ax_alpha.set_ylim(-0.05, 1.05)
     ax_alpha.legend(loc='upper left')
@@ -141,49 +151,48 @@ def plot_four_panel_figure(results: Dict[str, Trajectory],
     ax_alpha.text(-0.12, 0.5, '(a)', transform=ax_alpha.transAxes,
                  fontsize=11, fontweight='bold', va='center')
 
-    # Panel (b): Distance + TTC
+    # Panel (b): Distance + TTC (computed per-baseline; no shared-metric assumption)
     ax_dist = axes[1]
     ax_ttc = ax_dist.twinx()
 
-    # distance on left axis
-    ax_dist.plot(ref_traj.t, ref_traj.distance, color='#27AE60', linestyle='-', label='Distance d(t)')
+    for name, traj in results.items():
+        style = styles.get(name, {'color': 'k', 'linestyle': '-', 'label': name})
+        ax_dist.plot(traj.t, traj.distance, color=style['color'], linestyle=style['linestyle'],
+                     linewidth=style.get('linewidth', 1.5), label=f"Distance ({style['label']})")
+
+        ttc_plot = [min(ttc, ttc_max) for ttc in traj.ttc]
+        ax_ttc.plot(traj.t, ttc_plot, color=style['color'], linestyle=':',
+                    linewidth=style.get('linewidth', 1.5), label=f"TTC ({style['label']})")
+
     ax_dist.axhline(d_min, color='r', linestyle='--', linewidth=1.5, label=f'd_min = {d_min}m')
-    shade_emergency_regions(ax_dist, ref_traj.t, ref_traj.emergency)
+    shade_emergency_regions(ax_dist, ref_t, combined_emergency)
 
-    # TTC on right axis (capped)
-    ttc_plot = [min(ttc, ttc_max) for ttc in ref_traj.ttc]
-    ax_ttc.plot(ref_traj.t, ttc_plot, color='#34495E', linestyle=':', linewidth=1.5, label='TTC (capped)')
-
-    ax_dist.set_ylabel('Distance [m]', color='#27AE60')
-    ax_ttc.set_ylabel('TTC [s]', color='#34495E')
-    ax_dist.tick_params(axis='y', labelcolor='#27AE60')
-    ax_ttc.tick_params(axis='y', labelcolor='#34495E')
+    ax_dist.set_ylabel('Distance [m]')
+    ax_ttc.set_ylabel('TTC [s]')
     ax_dist.legend(loc='upper left')
     ax_ttc.legend(loc='upper right')
     ax_dist.grid(True)
     ax_dist.text(-0.12, 0.5, '(b)', transform=ax_dist.transAxes,
                  fontsize=11, fontweight='bold', va='center')
 
-    # Panel (c): Robustness rho = d - d_min (three curves with LLM-only offset)
+    # Panel (c): Robustness rho = d - d_min (computed per-baseline; no offsets)
     ax_rho = axes[2]
+    rho_llm_only = None
+    t_llm_only = None
 
-    # compute robustness for each baseline with LLM-only degradation offset
-    rho_classical = [d - d_min for d in ref_traj.distance]
-    rho_nesy = [d - d_min for d in ref_traj.distance]
-    rho_llm_only = [d - d_min - 2.0 for d in ref_traj.distance]  # intentional offset
-
-    # plot all three
-    ax_rho.plot(ref_traj.t, rho_classical, color=styles['classical']['color'],
-                linestyle=styles['classical']['linestyle'], label='Classical')
-    ax_rho.plot(ref_traj.t, rho_llm_only, color=styles['llm_only']['color'],
-                linestyle=styles['llm_only']['linestyle'], label='LLM-only')
-    ax_rho.plot(ref_traj.t, rho_nesy, color=styles['nesy']['color'],
-                linestyle=styles['nesy']['linestyle'],
-                linewidth=styles['nesy'].get('linewidth', 1.5), label='NeSy')
+    for name, traj in results.items():
+        style = styles.get(name, {'color': 'k', 'linestyle': '-', 'label': name})
+        rho = [d - d_min for d in traj.distance]
+        ax_rho.plot(traj.t, rho, color=style['color'], linestyle=style['linestyle'],
+                    linewidth=style.get('linewidth', 1.5), label=style['label'])
+        if name == 'llm_only':
+            rho_llm_only = rho
+            t_llm_only = traj.t
 
     ax_rho.axhline(0, color='k', linestyle='-', linewidth=1, alpha=0.5)
-    shade_negative_robustness(ax_rho, ref_traj.t, rho_llm_only)
-    shade_emergency_regions(ax_rho, ref_traj.t, ref_traj.emergency)
+    if rho_llm_only is not None and t_llm_only is not None:
+        shade_negative_robustness(ax_rho, t_llm_only, rho_llm_only)
+    shade_emergency_regions(ax_rho, ref_t, combined_emergency)
 
     ax_rho.set_ylabel('Robustness ρ [m]')
     ax_rho.legend(loc='upper left')
@@ -194,14 +203,14 @@ def plot_four_panel_figure(results: Dict[str, Trajectory],
     # Panel (d): Cumulative Total Variation
     ax_tv = axes[3]
     for name, traj in results.items():
-        style = styles[name]
+        style = styles.get(name, {'color': 'k', 'linestyle': '-', 'label': name})
         tv = compute_cumulative_tv(traj.alpha)
         ax_tv.plot(traj.t, tv, color=style['color'], linestyle=style['linestyle'],
                    linewidth=style.get('linewidth', 1.5), label=style['label'])
 
     # theoretical bound gamma * T
     ax_tv.axhline(gamma * T, color='gray', linestyle=':', linewidth=2, label=f'Bound γT = {gamma * T:.1f}')
-    shade_emergency_regions(ax_tv, ref_traj.t, ref_traj.emergency)
+    shade_emergency_regions(ax_tv, ref_t, combined_emergency)
 
     ax_tv.set_xlabel('Time [s]')
     ax_tv.set_ylabel('Cumulative TV')

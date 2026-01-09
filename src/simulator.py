@@ -7,7 +7,7 @@ import numpy as np
 from .vehicle import VehicleState, LeadVehicleProfile, step_dynamics, compute_metrics
 from .controllers import AutomationController, HumanController
 from .authority_allocator import ClassicalAllocator, LLMOnlyAllocator, NeSyAllocator
-from .llm_interface import MockLLM
+from .llm_interface import MockLLM, RealLLM
 
 
 def step_with_accel(state: VehicleState, a: float, dt: float) -> VehicleState:
@@ -38,6 +38,7 @@ class ScenarioParams:
     gamma: float = 0.5        # max authority rate [1/s]
     eta: float = 0.3          # proposal inertia
     sigma_w: float = 0.10     # ego process noise std [m/s^2]
+    use_real_llm: bool = False  # if True, use OpenAI-backed RealLLM instead of MockLLM
 
 
 @dataclass
@@ -94,10 +95,10 @@ def run_baseline(baseline_type: str, seed: int,
         llm = None
     elif baseline_type == 'llm_only':
         allocator = LLMOnlyAllocator(eta=params.eta)
-        llm = MockLLM(rng=rng_mock_llm)
+        llm = RealLLM() if params.use_real_llm else MockLLM(rng=rng_mock_llm)
     elif baseline_type == 'nesy':
         allocator = NeSyAllocator(eta=params.eta, gamma=params.gamma, dt=params.dt)
-        llm = MockLLM(rng=rng_mock_llm)
+        llm = RealLLM() if params.use_real_llm else MockLLM(rng=rng_mock_llm)
     else:
         raise ValueError(f"Unknown baseline: {baseline_type}")
 
@@ -152,7 +153,7 @@ def run_baseline(baseline_type: str, seed: int,
             if baseline_type == 'llm_only':
                 alpha = allocator.update(alpha, intent)
             else:  # nesy
-                alpha = allocator.update(alpha, intent, metrics.emergency)
+                alpha = allocator.update(alpha, intent, metrics.emergency, metrics.robustness)
 
         # update ego dynamics
         w = rng_ego.normal(0.0, params.sigma_w)

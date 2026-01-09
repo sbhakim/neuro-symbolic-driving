@@ -6,12 +6,14 @@ from .llm_interface import AuthorityIntent
 
 
 def project_invariants(alpha_prop: float, alpha_k: float,
-                       emergency: bool, dt: float, gamma: float) -> float:
+                       emergency: bool, dt: float, gamma: float,
+                       alpha_floor: float = 0.0) -> float:
     """
-    Project proposal to invariant set (rate limit + emergency monotonicity).
+    Project proposal to invariant set (rate limit + emergency monotonicity + safety floor).
 
     I_k = {alpha: |alpha - alpha_k| <= gamma*dt} ∩ [alpha_k, 1] if emergency
                                                   ∩ [0, 1] otherwise
+    Additionally enforces alpha >= alpha_floor (used for minimal safety-aware constraint).
     """
     lo = alpha_k - gamma * dt
     hi = alpha_k + gamma * dt
@@ -19,6 +21,7 @@ def project_invariants(alpha_prop: float, alpha_k: float,
     if emergency:
         lo = max(lo, alpha_k)  # monotonicity: alpha must not decrease
 
+    lo = max(lo, float(alpha_floor))
     lo = max(lo, 0.0)
     hi = min(hi, 1.0)
 
@@ -103,25 +106,33 @@ class LLMOnlyAllocator:
 
 
 class NeSyAllocator:
-    """NeSy: LLM intent + invariant monitor (rate + emergency monotonicity)."""
+    """NeSy: LLM intent + invariant monitor (rate + emergency monotonicity + minimal safety floor)."""
 
-    def __init__(self, eta: float, gamma: float, dt: float):
+    def __init__(self, eta: float, gamma: float, dt: float,
+                 alpha_floor_emergency: float = 0.80,
+                 alpha_floor_violation: float = 0.80):
         """
         Args:
             eta: Proposal inertia [0,1]
             gamma: Max authority rate [1/s]
             dt: Sampling period [s]
+            alpha_floor_emergency: Minimum authority when emergency=True
+            alpha_floor_violation: Minimum authority when robustness < 0
         """
         self.eta = eta
         self.gamma = gamma
         self.dt = dt
+        self.alpha_floor_emergency = float(np.clip(alpha_floor_emergency, 0.0, 1.0))
+        self.alpha_floor_violation = float(np.clip(alpha_floor_violation, 0.0, 1.0))
 
-    def update(self, alpha_k: float, intent: AuthorityIntent, emergency: bool) -> float:
+    def update(self, alpha_k: float, intent: AuthorityIntent, emergency: bool,
+               robustness: float = 0.0) -> float:
         """
         Intent→proposal→projection.
 
         1. Compute proposal tilde_alpha with inertia
         2. Project to invariants: alpha_{k+1} = Pi_{I_k}(tilde_alpha)
+           plus minimal safety-aware authority floor when emergency or robustness < 0.
         """
         # intent to proposal
         if intent.intent_type in ['INCREASE', 'DECREASE']:
@@ -131,7 +142,16 @@ class NeSyAllocator:
 
         alpha_prop = np.clip(alpha_prop, 0.0, 1.0)
 
+        # minimal safety-aware floor
+        alpha_floor = 0.0
+        if emergency:
+            alpha_floor = self.alpha_floor_emergency
+        elif robustness < 0.0:
+            alpha_floor = self.alpha_floor_violation
+
         # project to invariants
-        alpha_next = project_invariants(alpha_prop, alpha_k, emergency, self.dt, self.gamma)
+        alpha_next = project_invariants(
+            alpha_prop, alpha_k, emergency, self.dt, self.gamma, alpha_floor=alpha_floor
+        )
 
         return alpha_next
