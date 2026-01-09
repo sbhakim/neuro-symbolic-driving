@@ -1,7 +1,6 @@
 # src/vehicle.py
 
 from dataclasses import dataclass
-from typing import Final
 
 import numpy as np
 
@@ -53,9 +52,14 @@ def step_dynamics(
 class LeadVehicleProfile:
     """Scripted lead vehicle braking profile with recovery for emergency scenario."""
 
-    def __init__(self, brake_start: float = 10.0, brake_end: float = 14.0,
-                 brake_accel: float = -6.5, v_cruise: float = 30.0,
-                 recover_accel: float = 2.5):
+    def __init__(
+        self,
+        brake_start: float = 10.0,
+        brake_end: float = 14.0,
+        brake_accel: float = -6.5,
+        v_cruise: float = 30.0,
+        recover_accel: float = 2.5
+    ):
         """
         Args:
             brake_start: Time when braking begins [s]
@@ -81,14 +85,11 @@ class LeadVehicleProfile:
         """
         if t < self.brake_start:
             return 0.0
-        elif t < self.brake_end:
+        if t < self.brake_end:
             return float(self.brake_accel)
-        else:
-            # recovery phase: accelerate until back at cruise speed
-            if v_lead < self.v_cruise:
-                return float(self.recover_accel)
-            else:
-                return 0.0
+        if v_lead < self.v_cruise:
+            return float(self.recover_accel)
+        return 0.0
 
 
 def compute_metrics(
@@ -121,12 +122,12 @@ def compute_metrics(
         ttc = float("inf")
 
     emergency = bool(ttc <= tau_emerg)
-    robustness = distance - d_min
+    robustness = float(distance - d_min)
 
     return SafetyMetrics(
         distance=distance,
         relative_v=relative_v,
         ttc=float(ttc),
         emergency=emergency,
-        robustness=float(robustness),
+        robustness=robustness,
     )

@@ -37,3 +37,6 @@ outputs/
 *.csv
 metrics.json
 
+# ---- Local spec / notes (keep out of repo) ----
+instructions.tex
+
