@@ -137,16 +137,16 @@ def main():
     parser.add_argument("--no-fig", action="store_true",
                         help="Disable saving the figure output")
 
-    # LLM controls (backward compatible with --real-llm)
+    # LLM controls
     parser.add_argument("--llm-backend", type=str, default="mock",
                         choices=["mock", "openai", "hf"],
                         help="LLM backend: mock | openai | hf (default: mock)")
     parser.add_argument("--llm-model", type=str, default="",
-                        help="Model name/id. For openai: e.g., gpt-5-nano. For hf: e.g., meta-llama/Llama-3.1-8B")
+                        help="Model name/id. For openai: gpt-5-nano. For hf: meta-llama/Llama-3.1-8B, google/gemma-2-9b-it")
     parser.add_argument("--llm-period", type=float, default=1.0,
                         help="Call the LLM at most once per this many seconds (default: 1.0)")
     parser.add_argument("--llm-verbose", action="store_true",
-                        help="Enable verbose logging inside LLM backend (useful to confirm calls)")
+                        help="Enable verbose logging inside LLM backend (confirms calls)")
     parser.add_argument("--real-llm", action="store_true",
                         help="(Deprecated) Same as --llm-backend openai")
 
@@ -173,10 +173,12 @@ def main():
     if args.real_llm:
         llm_backend = "openai"
 
-    # choose default model if not provided
     llm_model = args.llm_model.strip()
     if llm_backend == "openai" and not llm_model:
         llm_model = "gpt-5-nano"
+
+    if llm_backend == "hf" and not llm_model:
+        raise SystemExit("Error: --llm-backend hf requires --llm-model (e.g., meta-llama/Llama-3.1-8B)")
 
     # setup scenario parameters
     params = ScenarioParams(
@@ -192,9 +194,10 @@ def main():
         gamma=args.gamma,
         eta=args.eta,
         sigma_w=args.sigma_w,
-        use_real_llm=(llm_backend == "openai"),
+        llm_backend=llm_backend,
         llm_model=llm_model if llm_model else "gpt-5-nano",
         llm_period_s=float(args.llm_period),
+        llm_verbose=bool(args.llm_verbose),
     )
 
     _print_header("Neuro-Symbolic Authority Allocation POC")
@@ -207,7 +210,6 @@ def main():
     print(f"Output dir: {outdir.resolve()}")
     print()
 
-    # LLM usage disclosure (best-effort)
     if llm_backend == "mock":
         print("LLM backend: MOCK (rule-based MockLLM)")
     elif llm_backend == "openai":
@@ -216,14 +218,13 @@ def main():
         print(f"OPENAI_API_KEY present: {has_key}")
         if not has_key:
             print("WARNING: OPENAI_API_KEY not set. RealLLM will fall back to safe HOLD at runtime.")
-    else:  # hf
+    else:
         print(f"LLM backend: OFFLINE_HF (model_id={llm_model})")
         print("NOTE: This requires the model to be present in the local Hugging Face cache.")
-    print(f"LLM period: {args.llm_period:.3f}s")
-    print(f"LLM verbose: {bool(args.llm_verbose)}")
+    print(f"LLM period: {params.llm_period_s:.3f}s")
+    print(f"LLM verbose: {bool(params.llm_verbose)}")
     print()
 
-    # run all baselines
     print("Running simulations...")
     t0 = time.time()
     results: Dict[str, Trajectory] = run_all_baselines(seed=args.seed, params=params)
@@ -231,7 +232,6 @@ def main():
     print(f"✓ Simulations complete in {t1 - t0:.3f}s")
     print()
 
-    # generate figure
     if not args.no_fig:
         print("Generating four-panel figure...")
         fig = plot_four_panel_figure(
@@ -245,7 +245,6 @@ def main():
         save_figure(fig, fig_path, dpi=int(args.dpi))
         print()
 
-    # compute and save metrics
     print("Computing metrics...")
     all_metrics = {}
     for name, traj in results.items():
@@ -270,7 +269,6 @@ def main():
     print(f"\nMetrics saved to {metrics_path}")
     print()
 
-    # save time-series data
     if not args.no_csv:
         print("Saving time-series data...")
         for name, traj in results.items():

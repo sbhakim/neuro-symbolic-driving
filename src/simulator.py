@@ -7,7 +7,7 @@ import numpy as np
 from .vehicle import VehicleState, LeadVehicleProfile, step_dynamics, compute_metrics
 from .controllers import AutomationController, HumanController
 from .authority_allocator import ClassicalAllocator, LLMOnlyAllocator, NeSyAllocator
-from .llm_interface import MockLLM, RealLLM
+from .llm_interface import MockLLM, RealLLM, OfflineHFLLM
 
 
 def step_with_accel(state: VehicleState, a: float, dt: float) -> VehicleState:
@@ -38,9 +38,12 @@ class ScenarioParams:
     gamma: float = 0.5        # max authority rate [1/s]
     eta: float = 0.3          # proposal inertia
     sigma_w: float = 0.10     # ego process noise std [m/s^2]
-    use_real_llm: bool = False        # if True, use OpenAI-backed RealLLM instead of MockLLM
-    llm_model: str = "gpt-5-nano"     # OpenAI model name used by RealLLM
-    llm_period_s: float = 1.0         # call LLM at most once per this many seconds (reduces API calls)
+
+    # LLM backend selection
+    llm_backend: str = "mock"        # 'mock' | 'openai' | 'hf'
+    llm_model: str = "gpt-5-nano"    # OpenAI model name OR HF repo id (when llm_backend='hf')
+    llm_period_s: float = 1.0        # call LLM at most once per this many seconds (reduces calls)
+    llm_verbose: bool = False        # verbose backend logging (proves OpenAI/HF is used)
 
 
 @dataclass
@@ -61,6 +64,24 @@ class Trajectory:
     u_auto: List[float]
     u_human: List[float]
     u_blend: List[float]
+
+
+def _make_llm(params: ScenarioParams, rng_mock_llm: np.random.Generator):
+    """
+    Construct the selected LLM backend (mock/openai/hf).
+
+    Returns an object implementing generate_intent(metrics, alpha_current).
+    """
+    backend = (params.llm_backend or "mock").lower().strip()
+
+    if backend == "openai":
+        return RealLLM(model=params.llm_model, verbose=bool(params.llm_verbose))
+
+    if backend == "hf":
+        return OfflineHFLLM(model_id=params.llm_model, verbose=bool(params.llm_verbose))
+
+    # default: mock
+    return MockLLM(rng=rng_mock_llm)
 
 
 def run_baseline(baseline_type: str, seed: int,
@@ -97,10 +118,10 @@ def run_baseline(baseline_type: str, seed: int,
         llm = None
     elif baseline_type == 'llm_only':
         allocator = LLMOnlyAllocator(eta=params.eta)
-        llm = RealLLM(model=params.llm_model) if params.use_real_llm else MockLLM(rng=rng_mock_llm)
+        llm = _make_llm(params, rng_mock_llm)
     elif baseline_type == 'nesy':
         allocator = NeSyAllocator(eta=params.eta, gamma=params.gamma, dt=params.dt)
-        llm = RealLLM(model=params.llm_model) if params.use_real_llm else MockLLM(rng=rng_mock_llm)
+        llm = _make_llm(params, rng_mock_llm)
     else:
         raise ValueError(f"Unknown baseline: {baseline_type}")
 
@@ -108,7 +129,7 @@ def run_baseline(baseline_type: str, seed: int,
     alpha = params.alpha0
     num_steps = int(params.T / params.dt)
 
-    # LLM call throttling (prevents "stuck" behavior from hundreds of API calls)
+    # LLM call throttling (prevents "stuck" behavior from too many calls)
     llm_every = max(1, int(round(max(params.llm_period_s, params.dt) / params.dt)))
     last_intent = None
     prev_emergency = False
@@ -156,7 +177,6 @@ def run_baseline(baseline_type: str, seed: int,
         if baseline_type == 'classical':
             alpha = allocator.update(alpha, metrics.ttc, metrics.distance)
         else:  # llm_only or nesy
-            # call LLM at a fixed period, and also immediately on emergency onset
             emergency_onset = (metrics.emergency and not prev_emergency)
             if last_intent is None or (k % llm_every == 0) or emergency_onset:
                 last_intent = llm.generate_intent(metrics, alpha)
