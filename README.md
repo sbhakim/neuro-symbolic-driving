@@ -53,7 +53,17 @@ python main.py --horizon 60 --dt 0.05 --outdir output
 python main.py --d-min 12 --tau-emerg 1.5 --gamma 0.4 --eta 0.25 --outdir output
 ```
 
-**4) Disable figure or CSV outputs (faster runs)**
+**4) Set initial/nominal authority (alpha0)**
+
+`alpha0` is used as the initial authority value and also serves as a nominal authority floor to prevent the LLM from collapsing authority to 0 under stochastic human control.
+
+```bash
+python main.py --alpha0 0.2 --outdir output
+# example: more conservative (keeps more automation authority)
+python main.py --alpha0 0.4 --outdir output
+```
+
+**5) Disable figure or CSV outputs (faster runs)**
 ```bash
 python main.py --no-fig --outdir output
 python main.py --no-csv --outdir output
@@ -69,8 +79,10 @@ python main.py --llm-backend mock --outdir output
 **OpenAI API (uses OPENAI_API_KEY)**
 ```bash
 export OPENAI_API_KEY="YOUR_KEY"
-python main.py --llm-backend openai --llm-model gpt-5-nano --outdir output
+python main.py --llm-backend openai --llm-model gpt-4.1-mini --outdir output
 ```
+
+*Note: Some OpenAI models have different parameter constraints. If a model errors, try `gpt-4.1-mini` first (known to work cleanly in this project).*
 
 **Offline Hugging Face (must already be cached)**
 ```bash
@@ -81,27 +93,19 @@ python main.py --llm-backend hf --llm-model google/gemma-2-9b-it --outdir output
 
 **Reduce LLM calls (important for OpenAI/offline 8B/9B)**
 ```bash
-python main.py --llm-backend openai --llm-model gpt-5-nano --llm-period 1.0 --outdir output
+python main.py --llm-backend openai --llm-model gpt-4.1-mini --llm-period 2.0 --outdir output
 ```
 
 **Verbose LLM logging (prove it's being used)**
 ```bash
-python main.py --llm-backend openai --llm-model gpt-5-nano --llm-verbose --outdir output
+python main.py --llm-backend openai --llm-model gpt-4.1-mini --llm-verbose --outdir output
 ```
-
-### Expected outputs
-
-After a successful run, your output directory contains:
-- `figure.png` (unless `--no-fig`)
-- `metrics.json`
-- `timeseries_classical.csv`
-- `timeseries_llm_only.csv`
-- `timeseries_nesy.csv` (unless `--no-csv`)
 
 ### Troubleshooting
 
-- **If Python can't import src.***, run from the repo root: `ls main.py src`
-- **If OpenAI mode feels "stuck"**, increase `--llm-period` (fewer calls), or use mock/offline
+- **If Python can't import src.***, run from the repo root (check that `main.py` and `src/` are present): `ls main.py src`
+- **If OpenAI mode feels "stuck"**, increase `--llm-period` (fewer calls), or use mock/offline HF
+- **If LLM-based baselines look unsafe**, raise `--alpha0` (keeps a nominal authority floor), and/or reduce `--llm-period` jitter by calling less often
 - **If offline HF runs slow**, your machine is likely CPU/offloading; try 4-bit quantization support (`bitsandbytes`) or use a GPU
 
 ## 📤 Outputs
@@ -138,8 +142,8 @@ Run tests:
 pytest -q
 ```
 
-## Contact
+## 📧 Contact
 For questions or issues: safayat.b.hakim@gmail.com
 
-## Notes
+## 📝 Notes
 This codebase is intended as a compact research implementation aligned with an accompanying paper.

@@ -84,7 +84,7 @@ class RealLLM:
     Thin OpenAI-backed LLM wrapper (drop-in replacement for MockLLM).
 
     - Reads API key from OPENAI_API_KEY (do not hardcode keys).
-    - Uses deterministic decoding (temperature=0) for reproducibility.
+    - Uses deterministic decoding (temperature=0) for reproducibility (when supported by the model).
     - Includes tiny in-memory caching to stabilize repeated runs.
     - Returns FALLBACK intent if the API is unavailable or output is invalid.
     - Optional verbose logging to confirm OpenAI usage during simulation.
@@ -133,7 +133,7 @@ class RealLLM:
             "- intent_type: INCREASE|DECREASE|HOLD|CONFIRM|FALLBACK\n"
             "- target_alpha: number in [0,1]\n"
             "- confidence: number in [0,1]\n"
-            "- rationale: short string\n\n"
+            "- rationale: short string (<= 8 words)\n\n"
             f"Signals:\n"
             f"distance_m={metrics.distance:.3f}\n"
             f"ttc_s={metrics.ttc:.3f}\n"
@@ -144,6 +144,64 @@ class RealLLM:
             "If distance_m is large and ttc_s is high => DECREASE.\n"
             "Otherwise => HOLD.\n"
         )
+
+    @staticmethod
+    def _extract_text(resp) -> str:
+        """
+        Robustly extract the model's textual output from OpenAI Responses API objects.
+
+        Different SDK versions expose either:
+        - resp.output_text (string), or
+        - resp.output[*].content[*].text (structured), or
+        - dict-like equivalents.
+        """
+        text = getattr(resp, "output_text", None)
+        if isinstance(text, str) and text.strip():
+            return text
+
+        try:
+            chunks = []
+            output = getattr(resp, "output", None)
+            if output is None and isinstance(resp, dict):
+                output = resp.get("output", None)
+
+            for item in output or []:
+                content = getattr(item, "content", None)
+                if content is None and isinstance(item, dict):
+                    content = item.get("content", None)
+
+                for c in content or []:
+                    t = getattr(c, "text", None)
+                    if t is None and isinstance(c, dict):
+                        t = c.get("text", None)
+                    if isinstance(t, str) and t.strip():
+                        chunks.append(t)
+
+            if chunks:
+                return "\n".join(chunks)
+        except Exception:
+            pass
+
+        return str(resp)
+
+    @staticmethod
+    def _incomplete_max_tokens(resp) -> bool:
+        """
+        Detect the 'incomplete because max_output_tokens' condition.
+        """
+        status = getattr(resp, "status", None)
+        if status is None and isinstance(resp, dict):
+            status = resp.get("status", None)
+
+        inc = getattr(resp, "incomplete_details", None)
+        if inc is None and isinstance(resp, dict):
+            inc = resp.get("incomplete_details", None)
+
+        reason = getattr(inc, "reason", None) if inc is not None else None
+        if reason is None and isinstance(inc, dict):
+            reason = inc.get("reason", None)
+
+        return (status == "incomplete") and (reason == "max_output_tokens")
 
     def generate_intent(self, metrics: SafetyMetrics, alpha_current: float) -> AuthorityIntent:
         prompt = self._prompt(metrics, alpha_current)
@@ -169,21 +227,45 @@ class RealLLM:
         if self.verbose:
             print(f"[RealLLM] calling OpenAI (model={self.model}, emergency={bool(metrics.emergency)})")
 
+        def _call(max_out: int):
+            # NOTE: Some OpenAI model families (e.g., gpt-5*) reject sampling params like temperature.
+            req: Dict[str, Any] = {
+                "model": self.model,
+                "input": prompt,
+                "max_output_tokens": int(max_out),
+                # Force JSON output to stabilize parsing (no markdown, no extra text).
+                "text": {"format": {"type": "json_object"}},
+            }
+
+            # GPT-5 family: set minimal reasoning effort (gpt-5-nano does NOT accept 'none').
+            if str(self.model).startswith("gpt-5"):
+                req["reasoning"] = {"effort": "minimal"}
+            else:
+                req["temperature"] = self.temperature
+
+            return client.responses.create(**req)
+
         try:
-            resp = client.responses.create(
-                model=self.model,
-                input=prompt,
-                temperature=self.temperature,
-                max_output_tokens=self.max_output_tokens,
-            )
-            text = getattr(resp, "output_text", None)
-            if text is None:
-                text = str(resp)
+            resp = _call(self.max_output_tokens)
+
+            # If the response was cut off due to token limit, retry once with a larger budget.
+            if self._incomplete_max_tokens(resp):
+                if self.verbose:
+                    print("[RealLLM] retry: response incomplete due to max_output_tokens")
+                bumped = max(int(self.max_output_tokens) * 4, 512)
+                bumped = min(bumped, 2048)
+                resp = _call(bumped)
+
+            text = self._extract_text(resp)
 
             if self.enable_cache:
                 self._cache[cache_key] = text
 
             intent = parse_llm_response(text, fallback_alpha=alpha_current)
+
+            if self.verbose and intent.intent_type == "FALLBACK":
+                preview = str(text).replace("\n", " ")[:240]
+                print(f"[RealLLM] parsed FALLBACK; raw preview: {preview}")
 
             if intent.intent_type not in ['FALLBACK'] and intent.confidence < self.min_confidence:
                 if self.verbose:
@@ -204,7 +286,7 @@ class RealLLM:
         except Exception as e:
             if self.verbose:
                 dt = time.time() - t0
-                print(f"[RealLLM] FALLBACK: OpenAI call failed (dt={dt:.3f}s): {type(e).__name__}")
+                print(f"[RealLLM] FALLBACK: OpenAI call failed (dt={dt:.3f}s): {type(e).__name__}: {e}")
             return AuthorityIntent(
                 intent_type='FALLBACK',
                 target_alpha=float(np.clip(alpha_current, 0.0, 1.0)),

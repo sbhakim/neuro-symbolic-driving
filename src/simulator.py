@@ -75,10 +75,14 @@ def _make_llm(params: ScenarioParams, rng_mock_llm: np.random.Generator):
     backend = (params.llm_backend or "mock").lower().strip()
 
     if backend == "openai":
-        return RealLLM(model=params.llm_model, verbose=bool(params.llm_verbose))
+        model = (params.llm_model or "gpt-5-nano").strip()
+        return RealLLM(model=model, verbose=bool(params.llm_verbose))
 
     if backend == "hf":
-        return OfflineHFLLM(model_id=params.llm_model, verbose=bool(params.llm_verbose))
+        model_id = (params.llm_model or "").strip()
+        if not model_id:
+            raise ValueError("HF backend requires llm_model to be a Hugging Face model_id (e.g., meta-llama/Llama-3.1-8B)")
+        return OfflineHFLLM(model_id=model_id, verbose=bool(params.llm_verbose))
 
     # default: mock
     return MockLLM(rng=rng_mock_llm)
@@ -117,10 +121,17 @@ def run_baseline(baseline_type: str, seed: int,
         allocator = ClassicalAllocator(rng=rng_classical)
         llm = None
     elif baseline_type == 'llm_only':
-        allocator = LLMOnlyAllocator(eta=params.eta)
+        # Minimal but critical: avoid collapsing to alpha=0 under stochastic human control.
+        allocator = LLMOnlyAllocator(eta=params.eta, alpha_min=float(params.alpha0))
         llm = _make_llm(params, rng_mock_llm)
     elif baseline_type == 'nesy':
-        allocator = NeSyAllocator(eta=params.eta, gamma=params.gamma, dt=params.dt)
+        # Minimal but critical: keep nominal authority floor even in non-emergency conditions.
+        allocator = NeSyAllocator(
+            eta=params.eta,
+            gamma=params.gamma,
+            dt=params.dt,
+            alpha_floor_nominal=float(params.alpha0),
+        )
         llm = _make_llm(params, rng_mock_llm)
     else:
         raise ValueError(f"Unknown baseline: {baseline_type}")

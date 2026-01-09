@@ -25,6 +25,11 @@ def project_invariants(alpha_prop: float, alpha_k: float,
     lo = max(lo, 0.0)
     hi = min(hi, 1.0)
 
+    # If a safety floor makes the interval infeasible under rate limits (lo > hi),
+    # prioritize safety by relaxing the upper bound to match the floor.
+    if lo > hi:
+        hi = lo
+
     return float(np.clip(alpha_prop, lo, hi))
 
 
@@ -82,12 +87,14 @@ class ClassicalAllocator:
 class LLMOnlyAllocator:
     """Baseline 2: LLM-only authority (intent→proposal with inertia, NO monitor)."""
 
-    def __init__(self, eta: float = 0.3):
+    def __init__(self, eta: float = 0.3, alpha_min: float = 0.0):
         """
         Args:
             eta: Proposal inertia [0,1]
+            alpha_min: Optional floor on authority to avoid collapsing to 0 (default: 0.0, i.e., disabled)
         """
         self.eta = eta
+        self.alpha_min = float(np.clip(alpha_min, 0.0, 1.0))
 
     def update(self, alpha_k: float, intent: AuthorityIntent) -> float:
         """
@@ -102,7 +109,7 @@ class LLMOnlyAllocator:
         else:  # HOLD, CONFIRM, FALLBACK
             alpha_prop = alpha_k
 
-        return float(np.clip(alpha_prop, 0.0, 1.0))
+        return float(np.clip(alpha_prop, self.alpha_min, 1.0))
 
 
 class NeSyAllocator:
@@ -110,7 +117,8 @@ class NeSyAllocator:
 
     def __init__(self, eta: float, gamma: float, dt: float,
                  alpha_floor_emergency: float = 0.80,
-                 alpha_floor_violation: float = 0.80):
+                 alpha_floor_violation: float = 0.80,
+                 alpha_floor_nominal: float = 0.0):
         """
         Args:
             eta: Proposal inertia [0,1]
@@ -118,12 +126,14 @@ class NeSyAllocator:
             dt: Sampling period [s]
             alpha_floor_emergency: Minimum authority when emergency=True
             alpha_floor_violation: Minimum authority when robustness < 0
+            alpha_floor_nominal: Minimum authority even in nominal conditions (e.g., set to alpha0)
         """
         self.eta = eta
         self.gamma = gamma
         self.dt = dt
         self.alpha_floor_emergency = float(np.clip(alpha_floor_emergency, 0.0, 1.0))
         self.alpha_floor_violation = float(np.clip(alpha_floor_violation, 0.0, 1.0))
+        self.alpha_floor_nominal = float(np.clip(alpha_floor_nominal, 0.0, 1.0))
 
     def update(self, alpha_k: float, intent: AuthorityIntent, emergency: bool,
                robustness: float = 0.0) -> float:
@@ -142,16 +152,20 @@ class NeSyAllocator:
 
         alpha_prop = np.clip(alpha_prop, 0.0, 1.0)
 
-        # minimal safety-aware floor
-        alpha_floor = 0.0
+        # minimal safety-aware floor (always keep at least nominal authority)
+        alpha_floor = float(self.alpha_floor_nominal)
         if emergency:
-            alpha_floor = self.alpha_floor_emergency
+            alpha_floor = max(alpha_floor, self.alpha_floor_emergency)
         elif robustness < 0.0:
-            alpha_floor = self.alpha_floor_violation
+            alpha_floor = max(alpha_floor, self.alpha_floor_violation)
+
+        # If robustness is negative (safety violation), do not allow authority to decrease.
+        # This is a minimal but critical NeSy "override" so the monitor can actually correct LLM intent.
+        emergency_or_violation = bool(emergency) or (robustness < 0.0)
 
         # project to invariants
         alpha_next = project_invariants(
-            alpha_prop, alpha_k, emergency, self.dt, self.gamma, alpha_floor=alpha_floor
+            alpha_prop, alpha_k, emergency_or_violation, self.dt, self.gamma, alpha_floor=alpha_floor
         )
 
         return alpha_next

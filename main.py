@@ -126,6 +126,8 @@ def main():
                         help="Proposal inertia eta (default: 0.3)")
     parser.add_argument("--sigma-w", type=float, default=0.10,
                         help="Ego process noise std sigma_w [m/s^2] (default: 0.10)")
+    parser.add_argument("--alpha0", type=float, default=0.2,
+                        help="Initial/nominal authority alpha0 (default: 0.2)")
 
     # output controls
     parser.add_argument("--ttc-max", type=float, default=10.0,
@@ -143,7 +145,7 @@ def main():
                         help="LLM backend: mock | openai | hf (default: mock)")
     parser.add_argument("--llm-model", type=str, default="",
                         help="Model name/id. For openai: gpt-5-nano. For hf: meta-llama/Llama-3.1-8B, google/gemma-2-9b-it")
-    parser.add_argument("--llm-period", type=float, default=1.0,
+    parser.add_argument("--llm-period", "--llm-period-s", dest="llm_period", type=float, default=1.0,
                         help="Call the LLM at most once per this many seconds (default: 1.0)")
     parser.add_argument("--llm-verbose", action="store_true",
                         help="Enable verbose logging inside LLM backend (confirms calls)")
@@ -164,6 +166,8 @@ def main():
         raise SystemExit("Error: --eta must be in [0, 1]")
     if args.llm_period <= 0:
         raise SystemExit("Error: --llm-period must be > 0")
+    if not (0.0 <= args.alpha0 <= 1.0):
+        raise SystemExit("Error: --alpha0 must be in [0, 1]")
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -188,7 +192,7 @@ def main():
         v0_ego=30.0,
         x0_lead=30.0,
         v0_lead=30.0,
-        alpha0=0.2,
+        alpha0=float(args.alpha0),
         d_min=args.d_min,
         tau_emerg=args.tau_emerg,
         gamma=args.gamma,
@@ -207,6 +211,7 @@ def main():
     print(f"Horizon: {params.T}s, dt: {params.dt}s")
     print(f"d_min: {params.d_min}m, tau_emerg: {params.tau_emerg}s, gamma: {params.gamma}/s, eta: {params.eta}")
     print(f"Noise sigma_w: {params.sigma_w}")
+    print(f"alpha0: {params.alpha0}")
     print(f"Output dir: {outdir.resolve()}")
     print()
 
