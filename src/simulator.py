@@ -38,7 +38,9 @@ class ScenarioParams:
     gamma: float = 0.5        # max authority rate [1/s]
     eta: float = 0.3          # proposal inertia
     sigma_w: float = 0.10     # ego process noise std [m/s^2]
-    use_real_llm: bool = False  # if True, use OpenAI-backed RealLLM instead of MockLLM
+    use_real_llm: bool = False        # if True, use OpenAI-backed RealLLM instead of MockLLM
+    llm_model: str = "gpt-5-nano"     # OpenAI model name used by RealLLM
+    llm_period_s: float = 1.0         # call LLM at most once per this many seconds (reduces API calls)
 
 
 @dataclass
@@ -95,16 +97,21 @@ def run_baseline(baseline_type: str, seed: int,
         llm = None
     elif baseline_type == 'llm_only':
         allocator = LLMOnlyAllocator(eta=params.eta)
-        llm = RealLLM() if params.use_real_llm else MockLLM(rng=rng_mock_llm)
+        llm = RealLLM(model=params.llm_model) if params.use_real_llm else MockLLM(rng=rng_mock_llm)
     elif baseline_type == 'nesy':
         allocator = NeSyAllocator(eta=params.eta, gamma=params.gamma, dt=params.dt)
-        llm = RealLLM() if params.use_real_llm else MockLLM(rng=rng_mock_llm)
+        llm = RealLLM(model=params.llm_model) if params.use_real_llm else MockLLM(rng=rng_mock_llm)
     else:
         raise ValueError(f"Unknown baseline: {baseline_type}")
 
     # simulation state
     alpha = params.alpha0
     num_steps = int(params.T / params.dt)
+
+    # LLM call throttling (prevents "stuck" behavior from hundreds of API calls)
+    llm_every = max(1, int(round(max(params.llm_period_s, params.dt) / params.dt)))
+    last_intent = None
+    prev_emergency = False
 
     # initialize trajectory storage
     traj = Trajectory(
@@ -149,11 +156,18 @@ def run_baseline(baseline_type: str, seed: int,
         if baseline_type == 'classical':
             alpha = allocator.update(alpha, metrics.ttc, metrics.distance)
         else:  # llm_only or nesy
-            intent = llm.generate_intent(metrics, alpha)
+            # call LLM at a fixed period, and also immediately on emergency onset
+            emergency_onset = (metrics.emergency and not prev_emergency)
+            if last_intent is None or (k % llm_every == 0) or emergency_onset:
+                last_intent = llm.generate_intent(metrics, alpha)
+
+            intent = last_intent
             if baseline_type == 'llm_only':
                 alpha = allocator.update(alpha, intent)
             else:  # nesy
                 alpha = allocator.update(alpha, intent, metrics.emergency, metrics.robustness)
+
+            prev_emergency = metrics.emergency
 
         # update ego dynamics
         w = rng_ego.normal(0.0, params.sigma_w)

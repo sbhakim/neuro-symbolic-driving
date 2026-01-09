@@ -25,10 +25,84 @@ Optional:
 - `rtamt` (only if extending the monitoring layer beyond the current robustness proxy)
 
 ## 🏁 Running
-Example run (writes to `output/`):
+
+From the project root (the folder that contains `main.py`), run:
 ```bash
 python main.py --seed 0 --outdir output
 ```
+
+**What this does:**
+- Runs all three baselines: `classical`, `llm_only`, `nesy`
+- Uses a deterministic random seed (repeatable results)
+- Writes artifacts into the folder you specify (`output/`)
+
+### Common variants
+
+**1) Change the random seed**
+```bash
+python main.py --seed 7 --outdir output
+```
+
+**2) Change simulation length / timestep**
+```bash
+python main.py --horizon 60 --dt 0.05 --outdir output
+```
+
+**3) Tune safety + authority parameters**
+```bash
+python main.py --d-min 12 --tau-emerg 1.5 --gamma 0.4 --eta 0.25 --outdir output
+```
+
+**4) Disable figure or CSV outputs (faster runs)**
+```bash
+python main.py --no-fig --outdir output
+python main.py --no-csv --outdir output
+```
+
+### LLM backend selection
+
+**Mock (default / fastest)**
+```bash
+python main.py --llm-backend mock --outdir output
+```
+
+**OpenAI API (uses OPENAI_API_KEY)**
+```bash
+export OPENAI_API_KEY="YOUR_KEY"
+python main.py --llm-backend openai --llm-model gpt-5-nano --outdir output
+```
+
+**Offline Hugging Face (must already be cached)**
+```bash
+python main.py --llm-backend hf --llm-model meta-llama/Llama-3.1-8B --outdir output
+# or
+python main.py --llm-backend hf --llm-model google/gemma-2-9b-it --outdir output
+```
+
+**Reduce LLM calls (important for OpenAI/offline 8B/9B)**
+```bash
+python main.py --llm-backend openai --llm-model gpt-5-nano --llm-period 1.0 --outdir output
+```
+
+**Verbose LLM logging (prove it's being used)**
+```bash
+python main.py --llm-backend openai --llm-model gpt-5-nano --llm-verbose --outdir output
+```
+
+### Expected outputs
+
+After a successful run, your output directory contains:
+- `figure.png` (unless `--no-fig`)
+- `metrics.json`
+- `timeseries_classical.csv`
+- `timeseries_llm_only.csv`
+- `timeseries_nesy.csv` (unless `--no-csv`)
+
+### Troubleshooting
+
+- **If Python can't import src.***, run from the repo root: `ls main.py src`
+- **If OpenAI mode feels "stuck"**, increase `--llm-period` (fewer calls), or use mock/offline
+- **If offline HF runs slow**, your machine is likely CPU/offloading; try 4-bit quantization support (`bitsandbytes`) or use a GPU
 
 ## 📤 Outputs
 
