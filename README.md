@@ -28,7 +28,7 @@ Optional:
 Example run (writes to `output/`):
 ```bash
 python main.py --seed 0 --outdir output
-
+```
 
 ## 📤 Outputs
 
@@ -62,7 +62,7 @@ All outputs are deterministic for a fixed seed.
 Run tests:
 ```bash
 pytest -q
-
+```
 
 ## Contact
 For questions or issues: safayat.b.hakim@gmail.com
