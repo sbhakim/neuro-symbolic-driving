@@ -1,0 +1,39 @@
+# ---- Python bytecode / caches ----
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+ruff_cache/
+.cache/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Build / packaging ----
+*.egg-info/
+dist/
+build/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Notebooks ----
+.ipynb_checkpoints/
+
+# ---- Logs ----
+*.log
+
+# ---- Generated outputs (do not commit experiment artifacts) ----
+output/
+outputs/
+*.png
+*.pdf
+*.csv
+metrics.json
+
