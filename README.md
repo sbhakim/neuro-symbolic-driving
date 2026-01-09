@@ -3,6 +3,14 @@
 ## 🧾 Overview
 This repository contains a research implementation of neuro-symbolic authority allocation for shared control in a longitudinal car-following scenario with an emergency braking event. At each discrete time step, an authority variable **$\alpha_k \in [0,1]$** blends automation and human control inputs, enabling dynamic shifts of control priority as safety risk changes. The code evaluates three strategies: **(i)** a Classical baseline that updates authority using hand-crafted risk thresholds, **(ii)** an LLM-only baseline that converts intent recommendations into authority updates without formal safety enforcement, and **(iii)** a Neuro-Symbolic (NeSy) method that applies an invariant projection layer to enforce constraints such as bounded rate of change and emergency monotonicity. The simulator logs full time-series trajectories (states, safety signals, control actions, and authority) and aggregates quantitative metrics for comparison across methods. Runs are deterministic for a fixed seed to support consistent evaluation and repeatable experiments.
 
+## 🏗️ System Architecture
+
+<div align="center">
+  <img src="data/image/authority_allocation_architecture.png" alt="Authority Allocation System Architecture" width="800"/>
+</div>
+
+The diagram above illustrates the neuro-symbolic authority allocation framework, showing how LLM-generated intents are processed through an invariant projection layer to ensure safety constraints while dynamically adjusting authority between automation and human control.
+
 ## 🗂️ Repository Structure
 - `main.py` — Runs the simulation suite and writes outputs  
 - `src/vehicle.py` — Vehicle state, discrete-time dynamics, safety metric computation  
