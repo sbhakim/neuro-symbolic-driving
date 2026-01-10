@@ -1,6 +1,6 @@
 # src/authority_allocator.py
 
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import numpy as np
 from .llm_interface import AuthorityIntent
 
@@ -135,14 +135,24 @@ class NeSyAllocator:
         self.alpha_floor_violation = float(np.clip(alpha_floor_violation, 0.0, 1.0))
         self.alpha_floor_nominal = float(np.clip(alpha_floor_nominal, 0.0, 1.0))
 
+        # Intervention tracking (no behavioral impact)
+        self.intervention_count: int = 0
+        self.intervention_log: List[Dict[str, Any]] = []
+
+        # Tolerance for float comparisons
+        self._eps: float = 1e-6
+
     def update(self, alpha_k: float, intent: AuthorityIntent, emergency: bool,
-               robustness: float = 0.0) -> float:
+               robustness: float = 0.0, step: int = -1) -> float:
         """
-        Intent→proposal→projection.
+        Intent→proposal→projection, with intervention tracking.
 
         1. Compute proposal tilde_alpha with inertia
         2. Project to invariants: alpha_{k+1} = Pi_{I_k}(tilde_alpha)
            plus minimal safety-aware authority floor when emergency or robustness < 0.
+
+        Args:
+            step: optional timestep index for logging (default -1 keeps backward compat)
         """
         # intent to proposal
         if intent.intent_type in ['INCREASE', 'DECREASE']:
@@ -150,22 +160,75 @@ class NeSyAllocator:
         else:  # HOLD, CONFIRM, FALLBACK
             alpha_prop = alpha_k
 
-        alpha_prop = np.clip(alpha_prop, 0.0, 1.0)
+        alpha_prop = float(np.clip(alpha_prop, 0.0, 1.0))
+
+        # compute which safety regime is active
+        violation = (robustness < 0.0)
 
         # minimal safety-aware floor (always keep at least nominal authority)
         alpha_floor = float(self.alpha_floor_nominal)
         if emergency:
             alpha_floor = max(alpha_floor, self.alpha_floor_emergency)
-        elif robustness < 0.0:
+        elif violation:
             alpha_floor = max(alpha_floor, self.alpha_floor_violation)
 
-        # If robustness is negative (safety violation), do not allow authority to decrease.
-        # This is a minimal but critical NeSy "override" so the monitor can actually correct LLM intent.
-        emergency_or_violation = bool(emergency) or (robustness < 0.0)
+        # activate monotonicity not only in emergency but also on violation
+        emergency_or_violation = bool(emergency) or violation
 
         # project to invariants
         alpha_next = project_invariants(
             alpha_prop, alpha_k, emergency_or_violation, self.dt, self.gamma, alpha_floor=alpha_floor
         )
 
+        # Log when projection changed the proposal (intervention occurred)
+        if abs(alpha_next - alpha_prop) > self._eps:
+            self.intervention_count += 1
+
+            gamma_dt = float(self.gamma * self.dt)
+
+            # Reason attribution (best-effort, mutually exclusive priority order)
+            reason = "other_projection"
+            # 1) Safety floor (proposal below floor and monitor pushed it up)
+            if (alpha_prop + self._eps) < alpha_floor and (alpha_next + self._eps) >= alpha_floor:
+                reason = "safety_floor"
+            # 2) Monotonicity (active and proposal would decrease authority)
+            elif emergency_or_violation and (alpha_prop + self._eps) < alpha_k and (alpha_next + self._eps) >= alpha_k:
+                reason = "monotonicity"
+            # 3) Rate limit (proposal exceeds rate bound)
+            elif abs(alpha_prop - alpha_k) > (gamma_dt + self._eps):
+                reason = "rate_limit"
+
+            self.intervention_log.append({
+                "step": int(step),
+                "proposed": float(alpha_prop),
+                "projected": float(alpha_next),
+                "delta": float(alpha_next - alpha_prop),
+                "reason": reason,
+                "emergency": bool(emergency),
+                "violation": bool(violation),
+                "robustness": float(robustness),
+                "alpha_floor": float(alpha_floor),
+                "gamma_dt": float(gamma_dt),
+                "intent_type": str(intent.intent_type),
+                "intent_target": float(intent.target_alpha),
+                "intent_confidence": float(intent.confidence),
+            })
+
         return alpha_next
+
+    def get_intervention_summary(self) -> Dict[str, Any]:
+        """Paper-friendly summary stats."""
+        by_reason = {"safety_floor": 0, "monotonicity": 0, "rate_limit": 0, "other_projection": 0}
+        deltas = []
+
+        for x in self.intervention_log:
+            r = x.get("reason", "other_projection")
+            by_reason[r] = by_reason.get(r, 0) + 1
+            deltas.append(abs(float(x.get("delta", 0.0))))
+
+        return {
+            "total_interventions": int(self.intervention_count),
+            "by_reason": by_reason,
+            "mean_abs_correction": float(np.mean(deltas)) if deltas else 0.0,
+            "max_abs_correction": float(np.max(deltas)) if deltas else 0.0,
+        }

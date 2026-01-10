@@ -54,42 +54,82 @@ class LeadVehicleProfile:
 
     def __init__(
         self,
-        brake_start: float = 10.0,
-        brake_end: float = 14.0,
-        brake_accel: float = -6.5,
+        scenario: str = "standard",
         v_cruise: float = 30.0,
-        recover_accel: float = 2.5
+        recover_accel: float = 2.5,
+        ego_a_min: float = -6.0,
+        feasibility_tolerance: float = 0.6
     ):
         """
         Args:
-            brake_start: Time when braking begins [s]
-            brake_end: Time when braking ends [s]
-            brake_accel: Braking acceleration [m/s^2]
+            scenario: 'standard' | 'severe' | 'repeated'
             v_cruise: Target cruise velocity [m/s]
             recover_accel: Recovery acceleration [m/s^2]
+            ego_a_min: Ego min acceleration (for feasibility check) [m/s^2]
+            feasibility_tolerance: Allowed margin for lead braking vs ego capability [m/s^2]
         """
-        self.brake_start = brake_start
-        self.brake_end = brake_end
-        self.brake_accel = brake_accel
+        self.scenario = scenario.lower().strip()
         self.v_cruise = v_cruise
         self.recover_accel = recover_accel
+
+        # Configure scenario-specific parameters
+        if self.scenario == "standard":
+            # Single braking event: moderate intensity, moderate duration
+            self.brake_accel = -6.5
+            self.brake_intervals = [(10.0, 14.0)]
+        elif self.scenario == "severe":
+            # Single braking event: longer duration, ego-feasible intensity
+            # Severity comes from extended braking time, not exceeding ego limits
+            self.brake_accel = -6.0  # equal to ego a_min magnitude (feasible)
+            self.brake_intervals = [(10.0, 15.0)]
+        elif self.scenario == "repeated":
+            # Multiple braking pulses: repeated emergency onsets for stress-testing
+            self.brake_accel = -6.5
+            self.brake_intervals = [(8.0, 11.0), (16.0, 19.0), (24.0, 27.0)]
+        else:
+            raise ValueError(f"Unknown scenario: {scenario} (expected: standard|severe|repeated)")
+
+        # Guardrail: prevent significantly infeasible scenarios
+        # Tolerance allows marginal cases that are feasible with proper headway
+        if self.brake_accel < (ego_a_min - feasibility_tolerance):
+            raise ValueError(
+                f"Infeasible: lead brake_accel={self.brake_accel} significantly exceeds "
+                f"ego_a_min={ego_a_min} (tolerance={feasibility_tolerance}). "
+                "Either increase ego braking authority or reduce lead braking."
+            )
 
     def get_acceleration(self, t: float, v_lead: float) -> float:
         """
         Return scripted acceleration at time t based on lead velocity.
 
         Phases:
-        - t < brake_start: cruise (a=0)
-        - brake_start <= t < brake_end: brake (a=brake_accel)
-        - t >= brake_end: recover until v_lead >= v_cruise, then cruise
+        - If t in any brake_interval: brake (a=brake_accel)
+        - Else if v_lead < v_cruise: recover (a=recover_accel)
+        - Else: cruise (a=0)
         """
-        if t < self.brake_start:
-            return 0.0
-        if t < self.brake_end:
-            return float(self.brake_accel)
+        # Check if currently in any braking interval
+        for brake_start, brake_end in self.brake_intervals:
+            if brake_start <= t < brake_end:
+                return float(self.brake_accel)
+
+        # Not braking: recover if below cruise speed, else cruise
         if v_lead < self.v_cruise:
             return float(self.recover_accel)
         return 0.0
+
+    def describe(self) -> dict:
+        """
+        Return configuration dict for logging and traceability.
+
+        Returns dict with scenario parameters for inclusion in metrics/outputs.
+        """
+        return {
+            "scenario": self.scenario,
+            "v_cruise": float(self.v_cruise),
+            "recover_accel": float(self.recover_accel),
+            "brake_accel": float(self.brake_accel),
+            "brake_intervals": list(self.brake_intervals),
+        }
 
 
 def compute_metrics(

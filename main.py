@@ -10,12 +10,12 @@ from typing import Dict
 
 import numpy as np
 
-from src.simulator import run_all_baselines, ScenarioParams, Trajectory
+from src.simulator import run_all_baselines, ScenarioParams, Trajectory, report_timing, resolve_effective_settings
 from src.visualization import plot_four_panel_figure, save_figure
 from src.stl_monitor import compute_rho_min, compute_satisfaction_rate
 
 
-def compute_metrics(traj: Trajectory, dt: float, d_min: float) -> dict:
+def compute_eval_metrics(traj: Trajectory, dt: float, d_min: float) -> dict:
     """
     Compute evaluation metrics for a trajectory.
 
@@ -128,6 +128,25 @@ def main():
                         help="Ego process noise std sigma_w [m/s^2] (default: 0.10)")
     parser.add_argument("--alpha0", type=float, default=0.2,
                         help="Initial/nominal authority alpha0 (default: 0.2)")
+    parser.add_argument("--ego-a-min", type=float, default=-6.0,
+                        help="Ego minimum acceleration (max braking) [m/s^2] (default: -6.0)")
+    parser.add_argument("--ego-a-max", type=float, default=3.0,
+                        help="Ego maximum acceleration [m/s^2] (default: 3.0)")
+
+    # authority floor controls
+    parser.add_argument("--llm-only-alpha-min", type=float, default=0.0,
+                        help="LLM-only minimum authority floor (default: 0.0 for stress test, use alpha0 for nominal)")
+    parser.add_argument("--nesy-floor-emergency", type=float, default=0.85,
+                        help="NeSy authority floor during emergency (default: 0.85)")
+    parser.add_argument("--nesy-floor-violation", type=float, default=0.70,
+                        help="NeSy authority floor during safety violation (default: 0.70)")
+
+    # scenario controls
+    parser.add_argument("--lead-scenario", type=str, default="standard",
+                        choices=["standard", "severe", "repeated"],
+                        help="Lead vehicle braking scenario: standard | severe | repeated (default: standard)")
+    parser.add_argument("--stress-test", action="store_true",
+                        help="Enable stress-test mode (sets llm-only-alpha-min=0.0 and uses severe scenario)")
 
     # output controls
     parser.add_argument("--ttc-max", type=float, default=10.0,
@@ -141,14 +160,19 @@ def main():
 
     # LLM controls
     parser.add_argument("--llm-backend", type=str, default="mock",
-                        choices=["mock", "openai", "hf"],
-                        help="LLM backend: mock | openai | hf (default: mock)")
+                        choices=["mock", "adversarial", "openai", "hf"],
+                        help="LLM backend: mock | adversarial | openai | hf (default: mock)")
     parser.add_argument("--llm-model", type=str, default="",
                         help="Model name/id. For openai: gpt-5-nano. For hf: meta-llama/Llama-3.1-8B, google/gemma-2-9b-it")
+    parser.add_argument("--llm-attack-mode", type=str, default="oscillate",
+                        choices=["oscillate", "force_decrease", "random_extreme", "confidence_manipulation"],
+                        help="Adversarial attack mode (only for --llm-backend adversarial): oscillate | force_decrease | random_extreme | confidence_manipulation (default: oscillate)")
     parser.add_argument("--llm-period", "--llm-period-s", dest="llm_period", type=float, default=1.0,
                         help="Call the LLM at most once per this many seconds (default: 1.0)")
     parser.add_argument("--llm-verbose", action="store_true",
                         help="Enable verbose logging inside LLM backend (confirms calls)")
+    parser.add_argument("--no-timing", action="store_true",
+                        help="Disable timing collection")
     parser.add_argument("--real-llm", action="store_true",
                         help="(Deprecated) Same as --llm-backend openai")
 
@@ -198,25 +222,56 @@ def main():
         gamma=args.gamma,
         eta=args.eta,
         sigma_w=args.sigma_w,
+        ego_a_min=float(args.ego_a_min),
+        ego_a_max=float(args.ego_a_max),
         llm_backend=llm_backend,
         llm_model=llm_model if llm_model else "gpt-5-nano",
         llm_period_s=float(args.llm_period),
         llm_verbose=bool(args.llm_verbose),
+        llm_attack_mode=args.llm_attack_mode,
+        collect_timing=not args.no_timing,
+        llm_only_alpha_min=float(args.llm_only_alpha_min),
+        nesy_alpha_floor_emergency=float(args.nesy_floor_emergency),
+        nesy_alpha_floor_violation=float(args.nesy_floor_violation),
+        lead_scenario=args.lead_scenario,
+        stress_test=bool(args.stress_test),
     )
+
+    # Resolve effective settings (accounts for stress-test overrides)
+    eff = resolve_effective_settings(params)
 
     _print_header("Neuro-Symbolic Authority Allocation POC")
 
     print(f"Python: {sys.version.split()[0]}")
     print(f"Seed: {args.seed}")
     print(f"Horizon: {params.T}s, dt: {params.dt}s")
-    print(f"d_min: {params.d_min}m, tau_emerg: {params.tau_emerg}s, gamma: {params.gamma}/s, eta: {params.eta}")
+    print(f"d_min: {params.d_min}m, gamma: {params.gamma}/s, eta: {params.eta}")
     print(f"Noise sigma_w: {params.sigma_w}")
     print(f"alpha0: {params.alpha0}")
+    print(f"Ego limits: a_min={params.ego_a_min} m/s², a_max={params.ego_a_max} m/s²")
+    print()
+    print("Configuration:")
+    print(f"  Requested lead scenario: {params.lead_scenario}")
+    print(f"  Stress test mode: {params.stress_test}")
+    if params.stress_test and eff["lead_scenario"] != params.lead_scenario:
+        print(f"  → EFFECTIVE lead scenario: {eff['lead_scenario']} (stress-test override)")
+    else:
+        print(f"  → Effective lead scenario: {eff['lead_scenario']}")
+    print(f"  Requested x0_lead: {params.x0_lead}m, tau_emerg: {params.tau_emerg}s")
+    if params.stress_test:
+        print(f"  → EFFECTIVE x0_lead: {eff['x0_lead']}m, tau_emerg: {eff['tau_emerg']}s (stress-test overrides)")
+    print(f"  LLM-only alpha_min: {eff['llm_only_alpha_min']}")
+    print(f"  NeSy floors: emergency={params.nesy_alpha_floor_emergency}, violation={params.nesy_alpha_floor_violation}, nominal={params.alpha0}")
     print(f"Output dir: {outdir.resolve()}")
     print()
 
     if llm_backend == "mock":
         print("LLM backend: MOCK (rule-based MockLLM)")
+        print("NOTE: Timing stats show mock generator latency (< 1ms), not real LLM inference.")
+    elif llm_backend == "adversarial":
+        print(f"LLM backend: ADVERSARIAL (attack_mode={params.llm_attack_mode})")
+        print("NOTE: Adversarial LLM generates pathological intents to stress-test the monitor.")
+        print("      Timing stats show mock generator latency (< 1ms), not real LLM inference.")
     elif llm_backend == "openai":
         has_key = bool(os.getenv("OPENAI_API_KEY"))
         print(f"LLM backend: OPENAI (model={llm_model})")
@@ -228,6 +283,7 @@ def main():
         print("NOTE: This requires the model to be present in the local Hugging Face cache.")
     print(f"LLM period: {params.llm_period_s:.3f}s")
     print(f"LLM verbose: {bool(params.llm_verbose)}")
+    print(f"Timing collection: {params.collect_timing}")
     print()
 
     print("Running simulations...")
@@ -251,9 +307,34 @@ def main():
         print()
 
     print("Computing metrics...")
-    all_metrics = {}
+
+    # Build run metadata for self-contained metrics.json
+    run_metadata = {
+        "args": {k: v for k, v in vars(args).items() if not k.startswith('_')},
+        "effective_settings": eff,
+        "seed": args.seed,
+        "dt": params.dt,
+        "T": params.T,
+        "d_min": params.d_min,
+    }
+
+    all_metrics = {"run_metadata": run_metadata}
+
     for name, traj in results.items():
-        metrics = compute_metrics(traj, params.dt, params.d_min)
+        metrics = compute_eval_metrics(traj, params.dt, params.d_min)
+
+        # Add intervention summary for NeSy baseline
+        if traj.intervention_summary is not None:
+            metrics['intervention_summary'] = traj.intervention_summary
+
+        # Add timing stats if available
+        if traj.timing is not None:
+            metrics['timing'] = report_timing(traj.timing, dt_ms=params.dt * 1000.0)
+
+        # Add effective settings for traceability
+        if traj.effective is not None:
+            metrics['effective_settings'] = traj.effective
+
         all_metrics[name] = metrics
 
         print(f"\n{name.upper()}:")
@@ -267,6 +348,17 @@ def main():
         print(f"  Min distance:        {metrics['distance_min']:>8.3f} m")
         print(f"  Min TTC:             {metrics['ttc_min']:>8.3f} s")
         print(f"  α range:             [{metrics['alpha_min']:.3f}, {metrics['alpha_max']:.3f}]")
+
+        # Print intervention summary for NeSy
+        if 'intervention_summary' in metrics:
+            iv = metrics['intervention_summary']
+            print(f"  Interventions:       {iv['total_interventions']:>8d}")
+            print(f"    - Safety floor:    {iv['by_reason']['safety_floor']:>8d}")
+            print(f"    - Monotonicity:    {iv['by_reason']['monotonicity']:>8d}")
+            print(f"    - Rate limit:      {iv['by_reason']['rate_limit']:>8d}")
+            print(f"    - Other:           {iv['by_reason']['other_projection']:>8d}")
+            print(f"  Mean |Δα|:           {iv['mean_abs_correction']:>8.4f}")
+            print(f"  Max |Δα|:            {iv['max_abs_correction']:>8.4f}")
 
     metrics_path = outdir / "metrics.json"
     with open(metrics_path, "w") as f:
