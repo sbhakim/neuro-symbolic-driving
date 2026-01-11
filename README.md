@@ -40,75 +40,73 @@ From the project root (the folder that contains `main.py`), run:
 python main.py --seed 0 --outdir output
 ```
 
-**What this does:**
-- Runs all three baselines: `classical`, `llm_only`, `nesy`
-- Uses a deterministic random seed (repeatable results)
-- Writes artifacts into the folder you specify (`output/`)
+Runs all three baselines (`classical`, `llm_only`, `nesy`) with deterministic seeding and writes results to `output/`.
 
-### Common variants
+### Core Usage Patterns
 
-**1) Change the random seed**
+**1) Deterministic experiments with different seeds**
 ```bash
-python main.py --seed 7 --outdir output
+python main.py --seed 42 --outdir output
 ```
 
-**2) Change simulation length / timestep**
-```bash
-python main.py --horizon 60 --dt 0.05 --outdir output
-```
-
-**3) Tune safety + authority parameters**
-```bash
-python main.py --d-min 12 --tau-emerg 1.5 --gamma 0.4 --eta 0.25 --outdir output
-```
-
-**4) Set initial/nominal authority (alpha0)**
-
-`alpha0` is used as the initial authority value and also serves as a nominal authority floor to prevent the LLM from collapsing authority to 0 under stochastic human control.
-
-```bash
-python main.py --alpha0 0.2 --outdir output
-# example: more conservative (keeps more automation authority)
-python main.py --alpha0 0.4 --outdir output
-```
-
-**5) Disable figure or CSV outputs (faster runs)**
-```bash
-python main.py --no-fig --outdir output
-python main.py --no-csv --outdir output
-```
-
-### LLM backend selection
-
-**Mock (default / fastest)**
-```bash
-python main.py --llm-backend mock --outdir output
-```
-
-**OpenAI API (uses OPENAI_API_KEY)**
+**2) OpenAI backend (requires OPENAI_API_KEY)**
 ```bash
 export OPENAI_API_KEY="YOUR_KEY"
 python main.py --llm-backend openai --llm-model gpt-4.1-mini --outdir output
 ```
 
-*Note: Some OpenAI models have different parameter constraints. If a model errors, try `gpt-4.1-mini` first (known to work cleanly in this project).*
-
-**Offline Hugging Face (must already be cached)**
+**3) Stress test (adversarial LLM + repeated emergencies)**
 ```bash
-python main.py --llm-backend hf --llm-model meta-llama/Llama-3.1-8B --outdir output
-# or
-python main.py --llm-backend hf --llm-model google/gemma-2-9b-it --outdir output
+python main.py --stress-test --outdir output
+# or manually configure:
+python main.py --llm-backend adversarial --llm-attack-mode force_decrease --lead-scenario repeated --outdir output
 ```
 
-**Reduce LLM calls (important for OpenAI/offline 8B/9B)**
+**4) Tune authority floors for fair baseline comparison**
+```bash
+# Conservative: higher automation authority across all baselines
+python main.py --alpha0 0.3 --llm-only-alpha-min 0.3 --nesy-floor-emergency 0.90 --outdir output
+```
+
+**5) Adjust safety parameters**
+```bash
+python main.py --d-min 12 --tau-emerg 1.5 --gamma 0.4 --eta 0.25 --outdir output
+```
+
+### Advanced Usage
+
+**Lead vehicle scenarios:**
+- `--lead-scenario standard`: Single moderate braking event (10-14s)
+- `--lead-scenario severe`: Extended braking duration (10-15s)
+- `--lead-scenario repeated`: Multiple emergency onsets (8-11s, 16-19s, 24-27s)
+
+**Adversarial backend (stress-tests monitor robustness):**
+```bash
+python main.py --llm-backend adversarial --llm-attack-mode <MODE> --outdir output
+# MODE: oscillate | force_decrease | random_extreme | confidence_manipulation
+```
+
+**Authority floor parameters:**
+- `--alpha0 <float>`: Initial authority and nominal floor (default: 0.2)
+- `--llm-only-alpha-min <float>`: LLM-only baseline floor (default: 0.0)
+- `--nesy-floor-emergency <float>`: NeSy floor during emergency (default: 0.85)
+- `--nesy-floor-violation <float>`: NeSy floor during safety violation (default: 0.70)
+
+**Offline Hugging Face (must be cached locally):**
+```bash
+python main.py --llm-backend hf --llm-model meta-llama/Llama-3.1-8B --outdir output
+```
+
+**Reduce LLM calls (cost/latency control):**
 ```bash
 python main.py --llm-backend openai --llm-model gpt-4.1-mini --llm-period 2.0 --outdir output
 ```
 
-**Verbose LLM logging (prove it's being used)**
-```bash
-python main.py --llm-backend openai --llm-model gpt-4.1-mini --llm-verbose --outdir output
-```
+**Output controls:**
+- `--no-fig`: Disable figure generation
+- `--no-csv`: Disable CSV time-series exports
+- `--dpi <int>`: Figure resolution (default: 150)
+- `--ttc-max <float>`: TTC plot cap in seconds (default: 10.0)
 
 ### Troubleshooting
 

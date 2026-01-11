@@ -35,9 +35,15 @@ outputs/
 *.png
 *.pdf
 *.csv
+*.tex
+*.txt
+
 metrics.json
 
 # ---- Local spec / notes (keep out of repo) ----
 instructions.tex
 CLAUDE.md
-
+run-instructions.txt
+build_data_for_fig_generation.py
+manuscript_figure_generation.py
+manuscript_fig_generation_1.py
