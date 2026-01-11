@@ -224,47 +224,171 @@ class TestComputeMetrics:
 
 
 class TestLeadVehicleProfile:
-    """Unit tests for scripted lead vehicle profile."""
+    """Unit tests for scenario-based lead vehicle profile."""
 
-    def test_cruise_phase(self):
-        """Test cruise phase returns zero acceleration."""
-        # arrange
-        profile = LeadVehicleProfile(brake_start=10.0, brake_end=14.0)
+    def test_standard_scenario_configuration(self):
+        """Test standard scenario has correct brake parameters."""
+        # arrange & act
+        profile = LeadVehicleProfile(scenario="standard")
 
+        # assert
+        assert profile.scenario == "standard"
+        assert profile.brake_accel == pytest.approx(-6.5)
+        assert profile.brake_intervals == [(10.0, 14.0)]
+        assert profile.v_cruise == pytest.approx(30.0)
+        assert profile.recover_accel == pytest.approx(2.5)
+
+    def test_severe_scenario_configuration(self):
+        """Test severe scenario has longer braking duration."""
+        # arrange & act
+        profile = LeadVehicleProfile(scenario="severe")
+
+        # assert
+        assert profile.scenario == "severe"
+        assert profile.brake_accel == pytest.approx(-6.0)
+        assert profile.brake_intervals == [(10.0, 15.0)]
+
+    def test_repeated_scenario_configuration(self):
+        """Test repeated scenario has multiple braking pulses."""
+        # arrange & act
+        profile = LeadVehicleProfile(scenario="repeated")
+
+        # assert
+        assert profile.scenario == "repeated"
+        assert profile.brake_accel == pytest.approx(-6.5)
+        assert profile.brake_intervals == [(8.0, 11.0), (16.0, 19.0), (24.0, 27.0)]
+
+    def test_invalid_scenario_raises_error(self):
+        """Test that invalid scenario name raises ValueError."""
         # act & assert
+        with pytest.raises(ValueError, match="Unknown scenario"):
+            LeadVehicleProfile(scenario="invalid")
+
+    def test_cruise_phase_before_brake(self):
+        """Test cruise phase returns zero acceleration when at cruise speed."""
+        # arrange
+        profile = LeadVehicleProfile(scenario="standard")
+
+        # act & assert - before braking interval
         assert profile.get_acceleration(t=5.0, v_lead=30.0) == pytest.approx(0.0)
 
-    def test_brake_phase(self):
-        """Test brake phase returns brake_accel."""
+    def test_brake_phase_standard(self):
+        """Test brake phase returns brake_accel during brake interval."""
         # arrange
-        profile = LeadVehicleProfile(brake_start=10.0, brake_end=14.0, brake_accel=-6.5)
+        profile = LeadVehicleProfile(scenario="standard")
 
-        # act & assert
+        # act & assert - during braking (10.0 <= t < 14.0)
+        assert profile.get_acceleration(t=10.0, v_lead=30.0) == pytest.approx(-6.5)
         assert profile.get_acceleration(t=12.0, v_lead=25.0) == pytest.approx(-6.5)
+        assert profile.get_acceleration(t=13.9, v_lead=20.0) == pytest.approx(-6.5)
+
+    def test_brake_phase_boundary_end(self):
+        """Test brake phase ends exactly at brake_end (exclusive)."""
+        # arrange
+        profile = LeadVehicleProfile(scenario="standard")
+
+        # act & assert - t=14.0 is NOT in [10.0, 14.0), should recover
+        a = profile.get_acceleration(t=14.0, v_lead=25.0)
+        assert a == pytest.approx(2.5)  # recovery, not braking
+
+    def test_brake_phase_repeated_multiple_intervals(self):
+        """Test repeated scenario brakes during all three intervals."""
+        # arrange
+        profile = LeadVehicleProfile(scenario="repeated")
+
+        # act & assert - first interval (8.0 <= t < 11.0)
+        assert profile.get_acceleration(t=9.0, v_lead=30.0) == pytest.approx(-6.5)
+
+        # second interval (16.0 <= t < 19.0)
+        assert profile.get_acceleration(t=17.0, v_lead=25.0) == pytest.approx(-6.5)
+
+        # third interval (24.0 <= t < 27.0)
+        assert profile.get_acceleration(t=25.0, v_lead=20.0) == pytest.approx(-6.5)
 
     def test_recovery_phase_below_cruise(self):
         """Test recovery phase returns recover_accel when v < v_cruise."""
         # arrange
-        profile = LeadVehicleProfile(
-            brake_start=10.0,
-            brake_end=14.0,
-            v_cruise=30.0,
-            recover_accel=2.5
-        )
+        profile = LeadVehicleProfile(scenario="standard", v_cruise=30.0, recover_accel=2.5)
 
-        # act & assert - lead velocity below cruise
+        # act & assert - after braking, velocity below cruise
         assert profile.get_acceleration(t=15.0, v_lead=20.0) == pytest.approx(2.5)
+        assert profile.get_acceleration(t=20.0, v_lead=28.0) == pytest.approx(2.5)
 
     def test_recovery_phase_at_cruise(self):
         """Test recovery phase returns zero when v >= v_cruise."""
         # arrange
-        profile = LeadVehicleProfile(
-            brake_start=10.0,
-            brake_end=14.0,
-            v_cruise=30.0,
-            recover_accel=2.5
-        )
+        profile = LeadVehicleProfile(scenario="standard", v_cruise=30.0)
 
-        # act & assert - lead at cruise speed
+        # act & assert - velocity at or above cruise speed
         assert profile.get_acceleration(t=20.0, v_lead=30.0) == pytest.approx(0.0)
         assert profile.get_acceleration(t=20.0, v_lead=31.0) == pytest.approx(0.0)
+
+    def test_recovery_between_repeated_intervals(self):
+        """Test recovery occurs between repeated braking intervals."""
+        # arrange
+        profile = LeadVehicleProfile(scenario="repeated")
+
+        # act & assert - between first and second interval (t=12, v<30)
+        assert profile.get_acceleration(t=12.0, v_lead=25.0) == pytest.approx(2.5)
+
+        # between second and third interval (t=20, v<30)
+        assert profile.get_acceleration(t=20.0, v_lead=22.0) == pytest.approx(2.5)
+
+    def test_feasibility_guardrail_accepts_valid_scenario(self):
+        """Test feasibility check passes for ego-feasible scenarios."""
+        # arrange & act - standard scenario: brake=-6.5, ego_a_min=-6.0, tolerance=0.6
+        # -6.5 > -6.0 - 0.6 = -6.6, so feasible
+        profile = LeadVehicleProfile(scenario="standard", ego_a_min=-6.0)
+
+        # assert - should not raise
+        assert profile.brake_accel == pytest.approx(-6.5)
+
+    def test_feasibility_guardrail_rejects_infeasible_scenario(self):
+        """Test feasibility check rejects significantly infeasible scenarios."""
+        # arrange & act & assert
+        # brake=-6.5, ego_a_min=-5.0, tolerance=0.6
+        # -6.5 < -5.0 - 0.6 = -5.6, so infeasible
+        with pytest.raises(ValueError, match="Infeasible"):
+            LeadVehicleProfile(scenario="standard", ego_a_min=-5.0, feasibility_tolerance=0.6)
+
+    def test_feasibility_guardrail_with_custom_tolerance(self):
+        """Test feasibility check respects custom tolerance."""
+        # arrange & act
+        # brake=-6.5, ego_a_min=-6.0, tolerance=1.0
+        # -6.5 > -6.0 - 1.0 = -7.0, so feasible with larger tolerance
+        profile = LeadVehicleProfile(
+            scenario="standard",
+            ego_a_min=-6.0,
+            feasibility_tolerance=1.0
+        )
+
+        # assert - should not raise
+        assert profile.brake_accel == pytest.approx(-6.5)
+
+    def test_describe_method_standard(self):
+        """Test describe() returns complete configuration dict for standard scenario."""
+        # arrange
+        profile = LeadVehicleProfile(scenario="standard", v_cruise=30.0, recover_accel=2.5)
+
+        # act
+        desc = profile.describe()
+
+        # assert
+        assert desc["scenario"] == "standard"
+        assert desc["v_cruise"] == pytest.approx(30.0)
+        assert desc["recover_accel"] == pytest.approx(2.5)
+        assert desc["brake_accel"] == pytest.approx(-6.5)
+        assert desc["brake_intervals"] == [(10.0, 14.0)]
+
+    def test_describe_method_repeated(self):
+        """Test describe() captures all brake intervals for repeated scenario."""
+        # arrange
+        profile = LeadVehicleProfile(scenario="repeated")
+
+        # act
+        desc = profile.describe()
+
+        # assert
+        assert desc["scenario"] == "repeated"
+        assert desc["brake_intervals"] == [(8.0, 11.0), (16.0, 19.0), (24.0, 27.0)]
+        assert desc["brake_accel"] == pytest.approx(-6.5)

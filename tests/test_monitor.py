@@ -1,6 +1,7 @@
 # tests/test_monitor.py
 
 import pytest
+import numpy as np
 
 from src.stl_monitor import robustness, compute_rho_min, compute_satisfaction_rate
 
@@ -183,3 +184,114 @@ class TestComputeSatisfactionRate:
 
         # assert
         assert sr == pytest.approx(0.0)
+
+
+class TestEdgeCases:
+    """Edge case and integration tests for monitoring utilities."""
+
+    def test_robustness_with_zero_distance(self):
+        """Test robustness when distance is zero (collision)."""
+        # arrange
+        distance = 0.0
+        d_min = 10.0
+
+        # act
+        rho = robustness(distance, d_min)
+
+        # assert
+        assert rho == pytest.approx(-10.0)
+
+    def test_robustness_with_negative_distance(self):
+        """Test robustness with negative distance (ego ahead of lead)."""
+        # arrange
+        distance = -5.0
+        d_min = 10.0
+
+        # act
+        rho = robustness(distance, d_min)
+
+        # assert
+        assert rho == pytest.approx(-15.0)
+
+    def test_robustness_with_large_values(self):
+        """Test robustness computation with large distance values."""
+        # arrange
+        distance = 1000.0
+        d_min = 10.0
+
+        # act
+        rho = robustness(distance, d_min)
+
+        # assert
+        assert rho == pytest.approx(990.0)
+
+    def test_compute_rho_min_with_numpy_array(self):
+        """Test rho_min accepts list (internally compatible with numpy)."""
+        # arrange - list input (function converts internally)
+        distances = [25.0, 15.0, 8.0, 30.0]
+        d_min = 10.0
+
+        # act
+        rho_min = compute_rho_min(distances, d_min)
+
+        # assert - minimum is 8.0 - 10.0 = -2.0
+        assert rho_min == pytest.approx(-2.0)
+
+    def test_satisfaction_rate_large_trajectory(self):
+        """Test satisfaction rate with realistic trajectory size."""
+        # arrange - simulate 300-step trajectory (30s @ 0.1s dt)
+        np.random.seed(42)
+        # Mix of safe (15-25m) and unsafe (5-9m) distances
+        safe_distances = np.random.uniform(15.0, 25.0, 200)
+        unsafe_distances = np.random.uniform(5.0, 9.0, 100)
+        distances = np.concatenate([safe_distances, unsafe_distances]).tolist()
+        d_min = 10.0
+
+        # act
+        sr = compute_satisfaction_rate(distances, d_min)
+
+        # assert - 200 out of 300 safe
+        assert sr == pytest.approx(200.0 / 300.0)
+
+    def test_rho_min_all_equal_distances(self):
+        """Test rho_min when all distances are identical."""
+        # arrange
+        distances = [15.0, 15.0, 15.0, 15.0]
+        d_min = 10.0
+
+        # act
+        rho_min = compute_rho_min(distances, d_min)
+
+        # assert
+        assert rho_min == pytest.approx(5.0)
+
+    def test_satisfaction_rate_alternating_pattern(self):
+        """Test satisfaction rate with alternating safe/unsafe pattern."""
+        # arrange - alternating 11.0 (safe) and 9.0 (unsafe)
+        distances = [11.0, 9.0, 11.0, 9.0, 11.0, 9.0]
+        d_min = 10.0
+
+        # act
+        sr = compute_satisfaction_rate(distances, d_min)
+
+        # assert - 3 out of 6 safe
+        assert sr == pytest.approx(0.5)
+
+    def test_consistency_between_metrics(self):
+        """Test that rho_min and satisfaction_rate are consistent."""
+        # arrange
+        distances = [25.0, 18.0, 12.0, 8.0, 15.0]
+        d_min = 10.0
+
+        # act
+        rho_min = compute_rho_min(distances, d_min)
+        sr = compute_satisfaction_rate(distances, d_min)
+
+        # assert
+        # rho_min should be 8.0 - 10.0 = -2.0 (violation occurred)
+        assert rho_min == pytest.approx(-2.0)
+        # satisfaction rate: 4/5 have rho > 0 (25, 18, 12, 15), except 8
+        assert sr == pytest.approx(0.8)
+        # If rho_min < 0, satisfaction_rate must be < 1.0
+        assert rho_min < 0.0
+        assert sr < 1.0
